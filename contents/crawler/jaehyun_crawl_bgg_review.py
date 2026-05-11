@@ -15,16 +15,11 @@ DELAY    = 2
 # ──────────────────────────────────────────────
 # ★ 설정값 - 여기만 수정하세요 ★
 # ──────────────────────────────────────────────
-BGG_ID     = "your_username"   # BGG 아이디
-BGG_PW     = "your_password"   # BGG 비밀번호
-
-# PC마다 아래 두 값만 바꾸세요
-# PC1: START_RANK=1,    END_RANK=3333
-# PC2: START_RANK=3334, END_RANK=6666
-# PC3: START_RANK=6667, END_RANK=10000
-START_RANK = 1
-END_RANK   = 3333
-MAX_PAGES  = None  # None=전체 / 숫자=테스트용
+BGG_ID     = "flow0003"   # BGG 아이디
+BGG_PW     = "skn26_01"   # BGG 비밀번호
+START_RANK = 1501
+END_RANK   = 2000
+MAX_PAGES  = 20
 
 CSV_NAME   = f"bgg_reviews_{START_RANK}_{END_RANK}.csv"
 
