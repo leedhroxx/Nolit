@@ -1,15 +1,18 @@
 /* AI 추천 페이지 — 채팅 로직 */
 let currentStep = 0;
 
-const $chatWrap  = document.getElementById('chat-wrap');
-const $typing    = document.getElementById('typing');
-const $input     = document.getElementById('chat-input');
-const $sendBtn   = document.getElementById('send-btn');
+const $chatWrap   = document.getElementById('chat-wrap');
+const $typing     = document.getElementById('typing');
+const $input      = document.getElementById('chat-input');
+const $sendBtn    = document.getElementById('send-btn');
 const $recSection = document.getElementById('rec-section');
-const $recList   = document.getElementById('rec-list');
+const $recList    = document.getElementById('rec-list');
 
-// 첫 AI 메시지 (서버에서 전달된 전역 변수 사용)
-document.getElementById('first-msg').textContent = AI_FLOW[0];
+function getCookie(name) {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(';').shift();
+}
 
 function scrollChat() {
     $chatWrap.scrollTop = $chatWrap.scrollHeight;
@@ -23,22 +26,47 @@ function escHtml(str) {
         .replace(/\n/g, '<br>');
 }
 
-function appendMsg(role, text) {
+function typeMessage(element, text, speed = 25) {
+    return new Promise((resolve) => {
+        const formatted = text.replace(/\s*·/g, '\n·');
+        element.style.whiteSpace = 'pre-wrap';
+        element.textContent = '';
+        let i = 0;
+        const timer = setInterval(() => {
+            element.textContent += formatted[i];
+            i++;
+            scrollChat();
+            if (i >= formatted.length) {
+                clearInterval(timer);
+                resolve();
+            }
+        }, speed);
+    });
+}
+
+// 첫 AI 메시지
+typeMessage(document.getElementById('first-msg'), AI_FLOW[0]);
+
+async function appendMsg(role, text) {
     const row = document.createElement('div');
     if (role === 'user') {
         row.className = 'chat-row-user';
         row.innerHTML = `<div class="chat-user">${escHtml(text)}</div>`;
+        $chatWrap.insertBefore(row, $typing);
+        scrollChat();
     } else {
         row.className = 'chat-row-ai';
         row.innerHTML = `
             <div class="chat-avatar">✦</div>
             <div>
                 <div class="chat-label">NOLIT AI</div>
-                <div class="chat-ai">${escHtml(text)}</div>
+                <div class="chat-ai"></div>
             </div>`;
+        $chatWrap.insertBefore(row, $typing);
+        scrollChat();
+        const target = row.querySelector('.chat-ai');
+        await typeMessage(target, text);
     }
-    $chatWrap.insertBefore(row, $typing);
-    scrollChat();
 }
 
 function showTyping(on) {
@@ -89,7 +117,7 @@ async function sendMessage(text) {
         const data = await res.json();
         currentStep = data.step;
         showTyping(false);
-        appendMsg('ai', data.reply);
+        await appendMsg('ai', data.reply);
 
         if (data.done && data.recommendations) {
             renderRecommendations(data.recommendations);
