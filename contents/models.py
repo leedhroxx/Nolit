@@ -59,6 +59,7 @@ class BoardGame(BaseContent):
     mechanism   = models.CharField(max_length=200, blank=True, verbose_name="메커니즘")
     tags        = models.JSONField(default=list, blank=True, verbose_name="태그")
     reviews     = models.JSONField(default=list, blank=True, verbose_name="리뷰")
+    name_eng = models.CharField(max_length=200, blank=True, verbose_name="영어 이름")
 
     class Meta:
         db_table  = "boardgame"
