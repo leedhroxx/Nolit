@@ -17,7 +17,7 @@ class Command(BaseCommand):
         self.stdout.write("=== 게임 데이터 import 시작 ===\n")
 
         self._import_boardgame_boardlife()
-        self._import_boardgame_bgg()
+        self._import_boardgame_bgg()        # boardlife 이후 실행 (중복 제거)
         self._import_escape_bbabang()
         self._import_crimescene_murdermysterylog()
         self._import_crimescene_murmynow()
@@ -28,7 +28,7 @@ class Command(BaseCommand):
         self.stdout.write(f"방탈출:   {Escape.objects.count()}개")
         self.stdout.write(f"크라임씬: {CrimeScene.objects.count()}개")
 
-    # ── 보드게임: boardlife ─────────────────────────────────
+    # ── 보드게임: boardlife (한국어 우선) ──────────────────
     def _import_boardgame_boardlife(self):
         stats_path   = os.path.join(VECTORSTORE, "faiss_boardlife_stats_meta.json")
         reviews_path = os.path.join(VECTORSTORE, "faiss_boardlife_reviews_meta.json")
@@ -40,7 +40,6 @@ class Command(BaseCommand):
         self.stdout.write("[boardlife] 보드게임 import 중...")
         start = time.time()
 
-        # 리뷰 평점 맵 (title → [rating, ...])
         reviews_map = {}
         if os.path.exists(reviews_path):
             for item in self._load(reviews_path):
@@ -54,23 +53,17 @@ class Command(BaseCommand):
         count = 0
 
         for i, item in enumerate(data):
-            name = self._to_str(item.get("title"))
+            name     = self._to_str(item.get("title"))       # 한국어 이름
+            name_eng = self._to_str(item.get("title_eng"))   # 영어 이름 (BGG 매칭용)
             if not name:
                 continue
             if i % 300 == 0:
                 self.stdout.write(f"  {i}/{total} ({time.time()-start:.1f}초)")
 
-            min_p = self._to_int(item.get("min_players"))
-            max_p = self._to_int(item.get("max_players"))
-            # boardlife: min_time / max_time
             min_t = self._to_int(item.get("min_time"))
             max_t = self._to_int(item.get("max_time"))
-            if min_t and max_t:
-                play_time = int((min_t + max_t) / 2)
-            else:
-                play_time = min_t or None
+            play_time = int((min_t + max_t) / 2) if min_t and max_t else (min_t or None)
 
-            # 메커니즘: 문자열 ("|" 구분)
             mechanism_raw = item.get("mechanism", "") or ""
             if isinstance(mechanism_raw, list):
                 mechanism_raw = " | ".join(mechanism_raw)
@@ -78,21 +71,24 @@ class Command(BaseCommand):
                 mechanism_raw = str(mechanism_raw)
             tags = [m.strip() for m in mechanism_raw.split("|") if m.strip()][:6]
 
-            # designer: 문자열
             designer = item.get("designer", "") or ""
             if isinstance(designer, list):
                 designer = " | ".join(designer)
 
-            # 별점: boardlife avg_rating 은 10점 만점 → 5점으로 정규화
+            # boardlife avg_rating: 10점 만점 → 5점으로 정규화
             raw_rating = self._to_float(item.get("avg_rating"))
-            rating = round(raw_rating / 2, 1) if raw_rating else None
+            rating = round(raw_rating / 2, 2) if raw_rating else None
+
+            # bgg_rank: boardlife에 rank 필드 있으면 저장
+            bgg_rank = self._to_int(item.get("rank"))
 
             BoardGame.objects.update_or_create(
                 name=name,
                 defaults={
+                    "name_eng":    name_eng,       # ← 영어 이름 저장
                     "rating":      rating,
-                    "players_min": min_p,
-                    "players_max": max_p,
+                    "players_min": self._to_int(item.get("min_players")),
+                    "players_max": self._to_int(item.get("max_players")),
                     "play_time":   play_time,
                     "description": "",
                     "image_url":   self._to_str(item.get("image")),
@@ -100,6 +96,7 @@ class Command(BaseCommand):
                     "designer":    self._to_str(designer),
                     "mechanism":   mechanism_raw[:200],
                     "category":    self._to_str(item.get("type")),
+                    "bgg_rank":    bgg_rank,
                     "tags":        tags,
                     "reviews":     [],
                 },
@@ -108,32 +105,57 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(f"[boardlife] {count}개 완료 ({time.time()-start:.1f}초)"))
 
-    # ── 보드게임: BGG ───────────────────────────────────────
+    # ── 보드게임: BGG (boardlife와 중복 제거) ──────────────
     def _import_boardgame_bgg(self):
         stats_path = os.path.join(VECTORSTORE, "faiss_bgg_stats_meta.json")
         if not os.path.exists(stats_path):
             self.stdout.write("[SKIP] bgg stats 없음")
             return
 
-        self.stdout.write("[bgg] 보드게임 import 중...")
+        self.stdout.write("[bgg] 보드게임 import 중... (boardlife 중복 제거)")
         start = time.time()
+
+        # boardlife에서 저장된 영어 이름 목록 (빠른 조회용)
+        existing_eng_names = set(
+            BoardGame.objects.exclude(name_eng="").values_list("name_eng", flat=True)
+        )
+        self.stdout.write(f"  boardlife 영어 이름 {len(existing_eng_names)}개 로드")
 
         data  = self._load(stats_path)
         total = len(data)
         count = 0
+        skipped = 0
 
         for i, item in enumerate(data):
-            name = self._to_str(item.get("title"))
+            name = self._to_str(item.get("title"))   # BGG 영어 이름
             if not name:
                 continue
             if i % 500 == 0:
                 self.stdout.write(f"  {i}/{total} ({time.time()-start:.1f}초)")
 
-            # boardlife 에 이미 있으면 스킵
-            if BoardGame.objects.filter(name=name).exists():
+            # boardlife에 같은 영어 이름이 있으면 BGG 정보만 보완하고 새 레코드 생성 안 함
+            if name in existing_eng_names:
+                # boardlife 레코드에 BGG rank / image 등 보완
+                try:
+                    game = BoardGame.objects.filter(name_eng=name).first()
+                    if not game:
+                        skipped += 1
+                        continue
+                    updated = False
+                    if not game.bgg_rank and item.get("rank"):
+                        game.bgg_rank = self._to_int(item.get("rank"))
+                        updated = True
+                    if not game.image_url and item.get("image"):
+                        game.image_url = self._to_str(item.get("image"))
+                        updated = True
+                    if updated:
+                        game.save()
+                except BoardGame.DoesNotExist:
+                    pass
+                skipped += 1
                 continue
 
-            # mechanism: 리스트
+            # boardlife에 없는 BGG 전용 게임 → 새로 저장
             mechanism_list = item.get("mechanism", []) or []
             if isinstance(mechanism_list, list):
                 mechanism = " | ".join(mechanism_list)
@@ -142,34 +164,24 @@ class Command(BaseCommand):
                 mechanism = self._to_str(mechanism_list)
                 tags = []
 
-            # designer: 리스트
             designer_raw = item.get("designer", []) or []
-            if isinstance(designer_raw, list):
-                designer = " | ".join(designer_raw)
-            else:
-                designer = self._to_str(designer_raw)
+            designer = " | ".join(designer_raw) if isinstance(designer_raw, list) else self._to_str(designer_raw)
 
-            # type: 리스트
             type_raw = item.get("type", []) or []
-            if isinstance(type_raw, list):
-                category = " | ".join(type_raw)
-            else:
-                category = self._to_str(type_raw)
+            category = " | ".join(type_raw) if isinstance(type_raw, list) else self._to_str(type_raw)
 
-            # playing_time: BGG는 단일 필드
-            play_time = self._to_int(item.get("playing_time"))
-
-            # 별점: BGG avg_rating 은 10점 만점 → 5점으로 정규화
+            # BGG avg_rating: 10점 만점 → 5점으로 정규화
             raw_rating = self._to_float(item.get("avg_rating"))
-            rating = round(raw_rating / 2, 1) if raw_rating else None
+            rating = self._to_float(item.get("avg_rating"))
 
             BoardGame.objects.update_or_create(
                 name=name,
                 defaults={
+                    "name_eng":    name,
                     "rating":      rating,
                     "players_min": self._to_int(item.get("min_players")),
                     "players_max": self._to_int(item.get("max_players")),
-                    "play_time":   play_time,
+                    "play_time":   self._to_int(item.get("playing_time")),
                     "description": "",
                     "image_url":   self._to_str(item.get("image")),
                     "difficulty":  self._weight_to_difficulty(item.get("weight")),
@@ -183,7 +195,9 @@ class Command(BaseCommand):
             )
             count += 1
 
-        self.stdout.write(self.style.SUCCESS(f"[bgg] {count}개 완료 ({time.time()-start:.1f}초)"))
+        self.stdout.write(self.style.SUCCESS(
+            f"[bgg] {count}개 신규 / {skipped}개 boardlife와 중복(보완) 완료 ({time.time()-start:.1f}초)"
+        ))
 
     # ── 방탈출: 빠른방탈출 ─────────────────────────────────
     def _import_escape_bbabang(self):
@@ -204,10 +218,14 @@ class Command(BaseCommand):
         reviews_map = {}
         if os.path.exists(reviews_path):
             for item in self._load(reviews_path):
-                key = f"{item.get('title','')}|{item.get('store_name','')}"
-                doc = item.get("document", "")
-                if doc:
-                    reviews_map.setdefault(key, []).append(doc)
+                title   = item.get("title", "")
+                if not title:
+                    continue
+                # 리뷰 텍스트: document 또는 review_text 필드
+                text = self._to_str(item.get("document") or item.get("review_text") or item.get("review") or "")
+                rating = self._to_float(item.get("rating"))
+                if text:
+                    reviews_map.setdefault(title, []).append(text)
 
         data  = self._load(stats_path)
         total = len(data)
@@ -226,12 +244,10 @@ class Command(BaseCommand):
             difficulty = self._num_to_difficulty(item.get("difficulty"))
             players_max = self._to_int(item.get("max_players"))
             play_time   = self._to_int(item.get("playing_time"))
-
-            # satisfaction: 0~5 만점 그대로 사용
-            rating = self._to_float(item.get("satisfaction"))
+            rating      = self._to_float(item.get("satisfaction"))
 
             tags = []
-            if self._to_float(item.get("story"), 0) >= 2:   tags.append("스토리")
+            if self._to_float(item.get("story"), 0) >= 2:    tags.append("스토리")
             if self._to_float(item.get("puzzle"), 0) >= 2:   tags.append("퍼즐")
             if self._to_float(item.get("activity"), 0) >= 0.5: tags.append("활동형")
             if fear_level is not None:
@@ -282,7 +298,6 @@ class Command(BaseCommand):
             if i % 50 == 0:
                 self.stdout.write(f"  {i}/{total} ({time.time()-start:.1f}초)")
 
-            # 리뷰: "리뷰1 || 리뷰2" 형태
             reviews_raw = item.get("reviews", "") or ""
             if isinstance(reviews_raw, str) and "||" in reviews_raw:
                 reviews = [r.strip() for r in reviews_raw.split("||") if r.strip()][:3]
@@ -292,13 +307,10 @@ class Command(BaseCommand):
                 rev = self._to_str(reviews_raw)
                 reviews = [rev] if rev else []
 
-            # rating: 5점 만점 그대로
-            rating = self._to_float(item.get("rating"))
-
             CrimeScene.objects.update_or_create(
                 name=name,
                 defaults={
-                    "rating":      rating,
+                    "rating":      self._to_float(item.get("rating")),
                     "players_min": self._to_int(item.get("min_players")),
                     "players_max": self._to_int(item.get("max_players")),
                     "play_time":   self._to_int(item.get("play_time")),
@@ -329,21 +341,15 @@ class Command(BaseCommand):
 
         for i, item in enumerate(data):
             name = self._to_str(item.get("name"))
-            if not name:
+            if not name or CrimeScene.objects.filter(name=name).exists():
                 continue
             if i % 50 == 0:
                 self.stdout.write(f"  {i}/{total} ({time.time()-start:.1f}초)")
 
-            if CrimeScene.objects.filter(name=name).exists():
-                continue
-
-            # rating: 5점 만점 그대로
-            rating = self._to_float(item.get("rating"))
-
             CrimeScene.objects.update_or_create(
                 name=name,
                 defaults={
-                    "rating":      rating,
+                    "rating":      self._to_float(item.get("rating")),
                     "players_min": self._to_int(item.get("min_players")),
                     "players_max": self._to_int(item.get("max_players")),
                     "play_time":   self._to_int(item.get("min_time")),
